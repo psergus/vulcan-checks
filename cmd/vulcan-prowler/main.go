@@ -81,6 +81,7 @@ type options struct {
 	Region          string   `json:"region"`
 	Groups          []string `json:"groups"`
 	SessionDuration int      `json:"sessionDuration"` // In secs.
+	ROLFPLevel      *byte    `json:"rolfp_level"`
 }
 
 func buildOptions(optJSON string) (options, error) {
@@ -136,8 +137,11 @@ func main() {
 		}
 
 		logger.Infof("account alias: '%s'", alias)
-
-		report, err := runProwler(ctx, opts)
+		groups, err := groupsFromOpts(opts)
+		if err != nil {
+			return err
+		}
+		report, err := runProwler(ctx, opts.Region, groups)
 		if err != nil {
 			return err
 		}
@@ -150,6 +154,23 @@ func main() {
 
 	c := check.NewCheckFromHandler(checkName, run)
 	c.RunAndServe()
+}
+
+func groupsFromOpts(opts options) ([]string, error) {
+	// If ROLFP level is specified then it defines the group to use.
+	if opts.ROLFPLevel == nil {
+		return opts.Groups, nil
+	}
+	level := *opts.ROLFPLevel
+	if level < 0 || level > 2 {
+		return nil, errors.New("invalid rolfp level value")
+	}
+
+	if level == 0 || level == 1 {
+		return []string{"cislevel1"}, nil
+	}
+	return []string{"cislevel2"}, nil
+
 }
 
 func addVulnsToState(state state.State, r *prowlerReport, alias string) {
