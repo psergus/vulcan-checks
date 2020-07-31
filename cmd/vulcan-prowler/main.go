@@ -9,6 +9,7 @@ import (
 	"io/ioutil"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/credentials"
@@ -44,6 +45,9 @@ var (
 	CISCompliance = report.Vulnerability{
 		Summary: "Compliance With CIS AWS Foundations Benchmark (BETA)",
 		Description: `<p>
+			The check did not received the security classification level
+			of the AWS account, so the benchmark has been executed against the
+			CIS Level 2.
 			The CIS AWS Foundations Benchmark provides prescriptive
 			guidance for configuring security options for a subset of Amazon Web
 			Services with an emphasis on foundational, testable, and architecture
@@ -69,6 +73,95 @@ var (
 			Check the Details and Resources sections to know the compliance status
 			and more details.
 		</p>`,
+		References: []string{
+			"https://d0.awsstatic.com/whitepapers/compliance/AWS_CIS_Foundations_Benchmark.pdf",
+			"https://github.com/toniblyx/prowler",
+			"https://www.cisecurity.org/benchmark/amazon_web_services/",
+		},
+	}
+
+	CISLevel1Compliance = report.Vulnerability{
+		Summary: "Compliance With CIS Level 1 AWS Foundations Benchmark (BETA)",
+		Description: `<p>
+			This account has been checked according to the CIS Level 1 according
+			to the security classification of the AWS account.
+			</p>
+			<p>
+		    The CIS AWS Foundations Benchmark provides prescriptive
+			guidance for configuring security options for a subset of Amazon Web
+			Services with an emphasis on foundational, testable, and architecture
+			agnostic settings. The services included in the scope are:
+		</p>
+		<p>
+		<ul>
+			<li>IAM</li>
+			<li>Config</li>
+			<li>CloudTrail</li>
+			<li>CloudWatch</li>
+			<li>SNS</li>
+			<li>S3</li>
+			<li>VPC (Default)</li>
+		</ul>
+		</p>
+		<p>
+			The provided recommendations are provided as a result of a check included in
+			the CIS Level 1 detecting issues.
+		</p>
+		<p>
+			Check the Details and Resources sections to know the compliance status
+			and more details.
+		</p>`,
+		References: []string{
+			"https://d0.awsstatic.com/whitepapers/compliance/AWS_CIS_Foundations_Benchmark.pdf",
+			"https://github.com/toniblyx/prowler",
+			"https://www.cisecurity.org/benchmark/amazon_web_services/",
+		},
+	}
+
+	CISLevel2Compliance = report.Vulnerability{
+		Summary: "Compliance With CIS Level 2 AWS Foundations Benchmark (BETA)",
+		Description: `<p>
+			This account has been checked according to the CIS Level 2 according
+			to the security classification of the AWS account.
+			</p>
+			<p>
+		    The CIS AWS Foundations Benchmark provides prescriptive
+			guidance for configuring security options for a subset of Amazon Web
+			Services with an emphasis on foundational, testable, and architecture
+			agnostic settings. The services included in the scope are:
+		</p>
+		<p>
+		<ul>
+			<li>IAM</li>
+			<li>Config</li>
+			<li>CloudTrail</li>
+			<li>CloudWatch</li>
+			<li>SNS</li>
+			<li>S3</li>
+			<li>VPC (Default)</li>
+		</ul>
+		</p>
+		<p>
+			The provided recommendations are provided as a result of a check included in
+			the CIS Level 2 detecting issues.
+		</p>
+		<p>
+			Check the Details and Resources sections to know the compliance status
+			and more details.
+		</p>`,
+		References: []string{
+			"https://d0.awsstatic.com/whitepapers/compliance/AWS_CIS_Foundations_Benchmark.pdf",
+			"https://github.com/toniblyx/prowler",
+			"https://www.cisecurity.org/benchmark/amazon_web_services/",
+		},
+	}
+
+	CISComplianceInfo = report.Vulnerability{
+		Summary: "Information about CIS AWS Foundations Benchmark (BETA)",
+		Description: `<p>
+			     Information gathered by executing the CIS benchmark about the account.
+		</p>
+			`,
 		References: []string{
 			"https://d0.awsstatic.com/whitepapers/compliance/AWS_CIS_Foundations_Benchmark.pdf",
 			"https://github.com/toniblyx/prowler",
@@ -141,15 +234,33 @@ func main() {
 		if err != nil {
 			return err
 		}
-		report, err := runProwler(ctx, opts.Region, groups)
+		r, err := runProwler(ctx, opts.Region, groups)
 		if err != nil {
 			return err
 		}
 
-		addVulnsToState(state, report, alias)
+		var v report.Vulnerability
+		if opts.ROLFPLevel == nil {
+			v = CISCompliance
 
+		}
+		if *opts.ROLFPLevel == 0 || *opts.ROLFPLevel == 1 {
+			v = CISLevel1Compliance
+		}
+
+		if *opts.ROLFPLevel == 2 {
+			v = CISLevel2Compliance
+		}
+		err = fillCisLevelVuln(&v, r, alias)
+		if err != nil {
+			return err
+		}
+		infov, err := buildInfoVuln(r, alias)
+		if err != nil {
+			return err
+		}
+		state.AddVulnerabilities(v, infov)
 		return nil
-
 	}
 
 	c := check.NewCheckFromHandler(checkName, run)
@@ -173,70 +284,137 @@ func groupsFromOpts(opts options) ([]string, error) {
 
 }
 
-func addVulnsToState(state state.State, r *prowlerReport, alias string) {
-	v := CISCompliance
-
-	fcTable := report.ResourcesGroup{
-		Name: "Failed Controls",
-		Header: []string{
-			"Level",
-			"Control",
-			"Region",
-			"Message",
-		},
-	}
-
+func buildInfoVuln(r *prowlerReport, alias string) (report.Vulnerability, error) {
+	v := CISComplianceInfo
+	var (
+		failed []entry
+		info   []entry
+	)
 	infoTable := report.ResourcesGroup{
-		Name: "Additional Info",
+		Name: "Failed and informational controls",
 		Header: []string{
-			"Level",
 			"Control",
+			"Description",
 			"Region",
 			"Message",
 		},
 	}
-
-	var passed []entry
-	var failed []entry
-	var info []entry
 	for _, e := range r.entries {
 		switch e.Status {
-		case "Pass":
-			passed = append(passed, e)
 		case "Info":
 			info = append(info, e)
+			control, description, err := parseControl(e.Control)
+			if err != nil {
+				return report.Vulnerability{}, err
+			}
 			row := map[string]string{
-				"Level":   e.Level,
-				"Control": e.Control,
-				"Region":  e.Region,
-				"Message": e.Message,
+				"Control":     control,
+				"Description": description,
+				"Region":      e.Region,
+				"Message":     e.Message,
 			}
 			infoTable.Rows = append(infoTable.Rows, row)
 		case "FAIL":
 			failed = append(failed, e)
+			control, description, err := parseControl(e.Control)
+			if err != nil {
+				return report.Vulnerability{}, err
+			}
 			row := map[string]string{
-				"Level":   e.Level,
-				"Control": e.Control,
-				"Region":  e.Region,
-				"Message": e.Message,
+				"Control":     control,
+				"Description": description,
+				"Region":      e.Region,
+				"Message":     e.Message,
+			}
+			infoTable.Rows = append(infoTable.Rows, row)
+		}
+	}
+
+	v.Resources = append(CISCompliance.Resources, infoTable)
+
+	v.Details = fmt.Sprintf("Account: %s\n", alias)
+	v.Details += "\n"
+	v.Details += fmt.Sprintf("Failed: %d\n", len(failed))
+	v.Details += fmt.Sprintf("Info: %d\n", len(info))
+
+	if len(failed) > 0 {
+		v.Score = report.SeverityThresholdNone
+	}
+	return v, nil
+}
+
+func fillCisLevelVuln(v *report.Vulnerability, r *prowlerReport, alias string) error {
+	var (
+		failed []entry
+		info   []entry
+	)
+	fcTable := report.ResourcesGroup{
+		Name: "Failed controls",
+		Header: []string{
+			"Control",
+			"Description",
+			"Region",
+			"Message",
+		},
+	}
+	for _, e := range r.entries {
+		switch e.Status {
+		case "Info":
+			info = append(info, e)
+			control, description, err := parseControl(e.Control)
+			if err != nil {
+				return err
+			}
+			row := map[string]string{
+				"Control":     control,
+				"Description": description,
+				"Region":      e.Region,
+				"Message":     e.Message,
+			}
+			fcTable.Rows = append(fcTable.Rows, row)
+		case "FAIL":
+			failed = append(failed, e)
+			control, description, err := parseControl(e.Control)
+			if err != nil {
+				return err
+			}
+			row := map[string]string{
+				"Control":     control,
+				"Description": description,
+				"Region":      e.Region,
+				"Message":     e.Message,
 			}
 			fcTable.Rows = append(fcTable.Rows, row)
 		}
 	}
 
-	v.Resources = append(CISCompliance.Resources, fcTable, infoTable)
+	v.Resources = append(CISCompliance.Resources, fcTable)
 
 	v.Details = fmt.Sprintf("Account: %s\n", alias)
 	v.Details += "\n"
-	v.Details += fmt.Sprintf("Passed: %d\n", len(passed))
 	v.Details += fmt.Sprintf("Failed: %d\n", len(failed))
 	v.Details += fmt.Sprintf("Info: %d\n", len(info))
 
 	if len(failed) > 0 {
-		v.Score = report.SeverityThresholdLow
+		v.Score = report.SeverityThresholdNone
 	}
+	return nil
+}
 
-	state.AddVulnerabilities(v)
+func parseControl(raw string) (control string, description string, err error) {
+	// Raw format example: "[check13] Ensure credentials unused for 90 days or
+	// greater are disabled (Scored)""
+	parts := strings.Split(raw, "] ")
+	if len(parts) != 2 {
+		return "", "", fmt.Errorf("error parsing raw control, unexpected format %s", raw)
+	}
+	// parts[0] = [check13 .
+	control = strings.Replace(parts[0], "[check", "", -1)
+	// control = 13 .
+	// description = Ensure credentials unused for 90 days or greater are
+	// disabled (Scored)
+	description = strings.Replace(parts[1], "(Scored)", "", -1)
+	return
 }
 
 type assumeRoleResponse struct {
